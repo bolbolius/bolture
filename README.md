@@ -55,7 +55,7 @@ Video output is streamed directly into FFmpeg without creating an intermediate i
 Requires **Go 1.20+**, **FFmpeg**, and **FFprobe**.
 
 ```bash
-git clone <repo>
+git clone https://github.com/bolbolius/bolture
 cd bolture
 go build -o bolture ./cmd/bolture
 ```
