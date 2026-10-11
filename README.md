@@ -8,6 +8,12 @@ It can also export the rendered result as PNG, JPEG, MP4, WebM, MKV, or MOV.
 
 > Terminal playback requires Kitty Graphics Protocol support. File export works independently of terminal graphics support.
 
+## Demo
+
+https://github.com/user-attachments/assets/855c27ac-1064-4fab-8683-f3afa4923fc2
+
+<img width="793" height="834" alt="Image" src="https://github.com/user-attachments/assets/c5d2c9aa-bbbe-44ce-91e6-c907023d1261" />
+
 ## Features
 
 * Real-time video playback in the terminal
@@ -49,7 +55,7 @@ Video output is streamed directly into FFmpeg without creating an intermediate i
 Requires **Go 1.20+**, **FFmpeg**, and **FFprobe**.
 
 ```bash
-git clone <repo>
+git clone https://github.com/bolbolius/bolture
 cd bolture
 go build -o bolture ./cmd/bolture
 ```
