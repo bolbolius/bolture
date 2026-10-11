@@ -99,6 +99,7 @@ bolture video.mp4 -o output.mp4 --fps 24
 | `--density MULT`             | Controls how much luminance is represented by dots | `1.0`         |
 | `--temporal-stability VALUE` | `off`, `low`, `medium`, `high`, or `0.0`–`1.0`     | `medium`      |
 | `--fps FPS`                  | Playback/export framerate                          | Source FPS    |
+| `--loop`                   | Loop playback when the video ends                  | `false`       |
 | `--dither METHOD`            | `atkinson` or `bayer`                              | `atkinson`    |
 | `--foreground COLOR`         | Dot color                                          | `#f0d8c0`     |
 | `--background COLOR`         | `transparent` or a color                           | `transparent` |

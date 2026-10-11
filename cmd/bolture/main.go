@@ -33,6 +33,7 @@ Options:
   --temporal-stability VALUE Temporal stability: off, low, medium, high, or 0.0-1.0 (default: medium)
   --fps FPS               Framerate for playback and export (default: 30 or video fps)
   --fullscreen            Scale display to fill terminal window (default: 1:1 pixel mapping)
+  --loop                  Loop playback when the video ends
   --dither METHOD         Dithering algorithm: atkinson or bayer (default: atkinson)
   --foreground COLOR      Foreground dot color (hex or named, default: #f0d8c0)
   --background COLOR      Background color (hex, named, or transparent, default: transparent)
@@ -48,6 +49,7 @@ func main() {
 		temporalStabilityFlag string
 		fpsFlag               float64
 		fullscreenFlag        bool
+		loopFlag              bool
 		ditherFlag            string
 		fgFlag                string
 		bgFlag                string
@@ -62,6 +64,7 @@ func main() {
 	fs.StringVar(&temporalStabilityFlag, "temporal-stability", "medium", "Temporal stability: off, low, medium, high, or 0.0-1.0 (default: medium)")
 	fs.Float64Var(&fpsFlag, "fps", 0, "Framerate for playback and export (default: 30 or video fps)")
 	fs.BoolVar(&fullscreenFlag, "fullscreen", false, "Scale display to fill terminal window (default: 1:1 pixel mapping)")
+	fs.BoolVar(&loopFlag, "loop", false, "Loop playback when the video ends")
 	fs.StringVar(&ditherFlag, "dither", "atkinson", "Dithering algorithm: atkinson or bayer")
 	fs.StringVar(&fgFlag, "foreground", "#f0d8c0", "Foreground dot color")
 	fs.StringVar(&bgFlag, "background", "transparent", "Background color (or transparent)")
@@ -258,6 +261,7 @@ func main() {
 
 	curPlacement := kitty.ComputePlacement(kitty.GetWindowSize(), width, height)
 
+playback:
 	for {
 		now := time.Now()
 		elapsed := now.Sub(startTime)
@@ -267,14 +271,32 @@ func main() {
 		if expectedFrame > frameIndex+1 {
 			for frameIndex < expectedFrame {
 				if err := reader.ReadFrame(srcFrame); err != nil {
-					return
+					if !loopFlag {
+						return
+					}
+					if err := reader.Restart(); err != nil {
+						return
+					}
+					renderer.Reset()
+					startTime = time.Now()
+					frameIndex = 0
+					continue playback
 				}
 				frameIndex++
 			}
 		}
 
 		if err := reader.ReadFrame(srcFrame); err != nil {
-			return
+			if !loopFlag {
+				return
+			}
+			if err := reader.Restart(); err != nil {
+				return
+			}
+			renderer.Reset()
+			startTime = time.Now()
+			frameIndex = 0
+			continue
 		}
 		frameIndex++
 
@@ -342,7 +364,7 @@ func splitArgs(rawArgs []string) (flagArgs []string, inputPath string) {
 		arg := rawArgs[i]
 		if strings.HasPrefix(arg, "-") {
 			flagArgs = append(flagArgs, arg)
-			isBool := arg == "--fullscreen" || arg == "-fullscreen"
+			isBool := arg == "--fullscreen" || arg == "-fullscreen" || arg == "--loop" || arg == "-loop"
 			if !isBool && !strings.Contains(arg, "=") && i+1 < len(rawArgs) && !strings.HasPrefix(rawArgs[i+1], "-") {
 				flagArgs = append(flagArgs, rawArgs[i+1])
 				i++

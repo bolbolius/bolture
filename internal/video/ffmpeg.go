@@ -15,8 +15,9 @@ type Reader struct {
 	Height int
 	FPS    float64
 
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
+	filePath string
+	cmd      *exec.Cmd
+	stdout   io.ReadCloser
 }
 
 type ffprobeStream struct {
@@ -60,10 +61,24 @@ func Open(filePath string, targetFPS float64) (*Reader, error) {
 		fps = 30.0
 	}
 
+	r := &Reader{
+		Width:    stream.Width,
+		Height:   stream.Height,
+		FPS:      fps,
+		filePath: filePath,
+	}
+	if err := r.start(); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+func (r *Reader) start() error {
 	args := []string{
 		"-v", "error",
-		"-i", filePath,
-		"-r", fmt.Sprintf("%.2f", fps),
+		"-i", r.filePath,
+		"-r", fmt.Sprintf("%.2f", r.FPS),
 		"-f", "rawvideo",
 		"-pix_fmt", "rgba",
 		"-",
@@ -72,20 +87,32 @@ func Open(filePath string, targetFPS float64) (*Reader, error) {
 	cmd := exec.Command("ffmpeg", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to open ffmpeg stdout: %w", err)
+		return fmt.Errorf("failed to open ffmpeg stdout: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start ffmpeg: %w", err)
+		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
-	return &Reader{
-		Width:  stream.Width,
-		Height: stream.Height,
-		FPS:    fps,
-		cmd:    cmd,
-		stdout: stdout,
-	}, nil
+	r.cmd = cmd
+	r.stdout = stdout
+	return nil
+}
+
+// Restart rewinds the video by restarting the underlying ffmpeg decoder.
+// Used for --loop playback. Temporal renderer state should be reset
+// separately via Renderer.Reset.
+func (r *Reader) Restart() error {
+	if r.stdout != nil {
+		_ = r.stdout.Close()
+		r.stdout = nil
+	}
+	if r.cmd != nil && r.cmd.Process != nil {
+		_ = r.cmd.Process.Kill()
+		_ = r.cmd.Wait()
+	}
+	r.cmd = nil
+	return r.start()
 }
 
 func parseFPS(s string) float64 {
