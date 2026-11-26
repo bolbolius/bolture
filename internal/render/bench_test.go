@@ -1,8 +1,10 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
+	"runtime"
 	"testing"
 )
 
@@ -20,7 +22,7 @@ func benchmarkSource() *image.RGBA {
 	return src
 }
 
-func benchRender(b *testing.B, w, h int, alg string) {
+func benchRender(b *testing.B, w, h int, alg string, threads int) {
 	b.Helper()
 	src := benchmarkSource()
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -33,6 +35,7 @@ func benchRender(b *testing.B, w, h int, alg string) {
 		TemporalStability: 0.6,
 		Foreground:        color.RGBA{240, 216, 192, 255},
 		Background:        color.RGBA{0, 0, 0, 0},
+		Threads:           threads,
 	})
 
 	// Warm the sampling maps so the reported figure is the steady-state
@@ -48,16 +51,31 @@ func benchRender(b *testing.B, w, h int, alg string) {
 			b.Fatal(err)
 		}
 	}
+	r.Close()
 }
 
 func BenchmarkRender720p(b *testing.B) {
 	for _, alg := range Algorithms() {
-		b.Run(alg, func(b *testing.B) { benchRender(b, 1280, 720, alg) })
+		b.Run(alg, func(b *testing.B) { benchRender(b, 1280, 720, alg, 1) })
 	}
 }
 
 func BenchmarkRender1080p(b *testing.B) {
 	for _, alg := range Algorithms() {
-		b.Run(alg, func(b *testing.B) { benchRender(b, 1920, 1080, alg) })
+		b.Run(alg, func(b *testing.B) { benchRender(b, 1920, 1080, alg, 1) })
+	}
+}
+
+func BenchmarkRender720pParallel(b *testing.B) {
+	if runtime.NumCPU() < 2 {
+		b.Skip("single CPU")
+	}
+	threads := []int{2, 4, runtime.NumCPU()}
+	for _, alg := range []string{"atkinson", "bayer8", "jarvis"} {
+		for _, n := range threads {
+			b.Run(fmt.Sprintf("%s/%d", alg, n), func(b *testing.B) {
+				benchRender(b, 1280, 720, alg, n)
+			})
+		}
 	}
 }

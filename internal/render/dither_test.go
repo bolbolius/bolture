@@ -1,9 +1,11 @@
 package render
 
 import (
+	"bytes"
 	"hash/fnv"
 	"image"
 	"image/color"
+	"runtime"
 	"testing"
 )
 
@@ -136,6 +138,58 @@ func TestEveryAlgorithmRenders(t *testing.T) {
 	}
 }
 
+func TestParallelMatchesSerial(t *testing.T) {
+	src := testGradient(320, 180)
+	for _, alg := range Algorithms() {
+		for _, dot := range []float64{1, 2} {
+			opts := Options{
+				Width:             160,
+				Height:            90,
+				DotSize:           dot,
+				Density:           1,
+				Dither:            alg,
+				TemporalStability: 0.6,
+				Foreground:        color.RGBA{240, 216, 192, 255},
+				Background:        color.RGBA{0, 0, 0, 0},
+			}
+
+			serial := NewRenderer(opts)
+			serialDst := image.NewRGBA(image.Rect(0, 0, 160, 90))
+			if err := serial.Render(src, serialDst); err != nil {
+				t.Fatal(err)
+			}
+
+			opts.Threads = 4
+			parallel := NewRenderer(opts)
+			parallelDst := image.NewRGBA(image.Rect(0, 0, 160, 90))
+			if err := parallel.Render(src, parallelDst); err != nil {
+				parallel.Close()
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(serialDst.Pix, parallelDst.Pix) {
+				parallel.Close()
+				t.Fatalf("%s dot %g: parallel output differs from serial", alg, dot)
+			}
+
+			// A second frame exercises the temporal deadband and the previous
+			// dot buffer on both paths.
+			if err := serial.Render(src, serialDst); err != nil {
+				t.Fatal(err)
+			}
+			if err := parallel.Render(src, parallelDst); err != nil {
+				parallel.Close()
+				t.Fatal(err)
+			}
+			if !bytes.Equal(serialDst.Pix, parallelDst.Pix) {
+				parallel.Close()
+				t.Fatalf("%s dot %g: second frame differs between serial and parallel", alg, dot)
+			}
+			parallel.Close()
+		}
+	}
+}
+
 func TestRenderDoesNotAllocate(t *testing.T) {
 	src := testGradient(320, 180)
 	dst := image.NewRGBA(image.Rect(0, 0, 160, 90))
@@ -156,5 +210,21 @@ func TestRenderDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("Render allocated %v times per run, want 0", allocs)
+	}
+
+	if runtime.NumCPU() < 2 {
+		return
+	}
+	r.opts.Threads = runtime.NumCPU()
+	r.Close()
+	r = NewRenderer(r.opts)
+	defer r.Close()
+	allocs = testing.AllocsPerRun(10, func() {
+		if err := r.Render(src, dst); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("parallel Render allocated %v times per run, want 0", allocs)
 	}
 }

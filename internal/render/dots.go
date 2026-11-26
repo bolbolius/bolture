@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"runtime"
 )
 
 // ShadowCutoff is the luminance floor below which pixels produce no dots.
@@ -19,6 +20,9 @@ type Options struct {
 	TemporalStability float64
 	Foreground        color.RGBA
 	Background        color.RGBA
+	// Threads is the number of workers for sampling and drawing. 1 keeps the
+	// renderer single-core. 0 and negative values are treated as 1.
+	Threads int
 }
 
 type Renderer struct {
@@ -45,6 +49,11 @@ type Renderer struct {
 	sampleX0, sampleX1     []int
 	sampleY0, sampleY1     []int
 	sampleCol, sampleRow   []int
+
+	pool      *parallelPool
+	sampleSrc *image.RGBA
+	frameW    int
+	framePix  []byte
 }
 
 func NewRenderer(opts Options) *Renderer {
@@ -81,7 +90,7 @@ func NewRenderer(opts Options) *Renderer {
 	gridH := (opts.Height + step - 1) / step
 	gridTotal := gridW * gridH
 
-	return &Renderer{
+	r := &Renderer{
 		opts:          opts,
 		step:          step,
 		lumBuf:        make([]float64, total),
@@ -102,6 +111,18 @@ func NewRenderer(opts Options) *Renderer {
 		sampleY1:  make([]int, opts.Height),
 		sampleRow: make([]int, opts.Height),
 	}
+
+	threads := opts.Threads
+	if threads < 2 {
+		return r
+	}
+	if max := runtime.NumCPU(); threads > max {
+		threads = max
+	}
+	if threads > 1 {
+		r.pool = newParallelPool(r, threads)
+	}
+	return r
 }
 
 func (r *Renderer) Reset() {
@@ -213,15 +234,25 @@ func (r *Renderer) prepareSampling(srcW, srcH, dstW, dstH int) {
 
 func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH int) {
 	r.prepareSampling(srcW, srcH, canvasW, canvasH)
+	r.frameW = canvasW
+	r.sampleSrc = src
 
-	srcPix := src.Pix
-	srcStride := src.Stride
+	if r.pool != nil {
+		r.pool.run(stepSample, canvasH)
+		return
+	}
+	r.sampleRows(0, canvasH)
+}
+
+func (r *Renderer) sampleRows(lo, hi int) {
+	srcPix := r.sampleSrc.Pix
+	srcStride := r.sampleSrc.Stride
 	lum := r.lumBuf
-	total := canvasW * canvasH
+	canvasW := r.frameW
 
 	switch r.sampleMode {
 	case sampleIdentity:
-		for cy := 0; cy < canvasH; cy++ {
+		for cy := lo; cy < hi; cy++ {
 			rowOff := cy * srcStride
 			dstOff := cy * canvasW
 			for cx := 0; cx < canvasW; cx++ {
@@ -231,7 +262,7 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 		}
 	case sampleBox:
 		// Area box-averaging to prevent aliasing when downsampling
-		for cy := 0; cy < canvasH; cy++ {
+		for cy := lo; cy < hi; cy++ {
 			sy0 := r.sampleY0[cy]
 			sy1 := r.sampleY1[cy]
 			dstRowOff := cy * canvasW
@@ -259,7 +290,7 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 			}
 		}
 	default:
-		for cy := 0; cy < canvasH; cy++ {
+		for cy := lo; cy < hi; cy++ {
 			sy := r.sampleRow[cy]
 			srcRowOff := sy * srcStride
 			dstRowOff := cy * canvasW
@@ -275,9 +306,12 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 	if r.hasPrevFrame && r.opts.TemporalStability > 0 {
 		deadband := r.opts.TemporalStability * 0.08
 		prevLum := r.prevLum
-		for i := 0; i < total; i++ {
-			if math.Abs(lum[i]-prevLum[i]) < deadband {
-				lum[i] = prevLum[i]
+		for cy := lo; cy < hi; cy++ {
+			start := cy * canvasW
+			for i := start; i < start+canvasW; i++ {
+				if math.Abs(lum[i]-prevLum[i]) < deadband {
+					lum[i] = prevLum[i]
+				}
 			}
 		}
 	}
@@ -309,23 +343,38 @@ func (r *Renderer) renderSinglePixel(dst *image.RGBA, w, h int) {
 
 	Dither(r.lumBuf[:total], r.dotsBuf[:total], r.ditherBuf[:total], w, h, r.opts.Dither, r.opts.Density, prevDots, r.opts.TemporalStability)
 
-	pix := dst.Pix
-	fg := r.opts.Foreground
-	bg := r.opts.Background
-	fgPix := uint32(fg.R) | uint32(fg.G)<<8 | uint32(fg.B)<<16 | uint32(fg.A)<<24
-	bgPix := uint32(bg.R) | uint32(bg.G)<<8 | uint32(bg.B)<<16 | uint32(bg.A)<<24
-
-	for i := 0; i < total; i++ {
-		v := bgPix
-		if r.dotsBuf[i] {
-			v = fgPix
-		}
-		binary.LittleEndian.PutUint32(pix[i*4:], v)
+	r.frameW = w
+	r.framePix = dst.Pix
+	if r.pool != nil {
+		r.pool.run(stepFill, h)
+	} else {
+		r.fillRows(0, h)
 	}
 
 	copy(r.prevLum[:total], r.lumBuf[:total])
 	copy(r.prevDots[:total], r.dotsBuf[:total])
 	r.hasPrevFrame = true
+}
+
+func (r *Renderer) fillRows(lo, hi int) {
+	pix := r.framePix
+	w := r.frameW
+	fg := r.opts.Foreground
+	bg := r.opts.Background
+	fgPix := uint32(fg.R) | uint32(fg.G)<<8 | uint32(fg.B)<<16 | uint32(fg.A)<<24
+	bgPix := uint32(bg.R) | uint32(bg.G)<<8 | uint32(bg.B)<<16 | uint32(bg.A)<<24
+
+	for y := lo; y < hi; y++ {
+		row := y * w
+		for x := 0; x < w; x++ {
+			i := row + x
+			v := bgPix
+			if r.dotsBuf[i] {
+				v = fgPix
+			}
+			binary.LittleEndian.PutUint32(pix[i*4:], v)
+		}
+	}
 }
 
 func (r *Renderer) renderDiscs(dst *image.RGBA, w, h int) {

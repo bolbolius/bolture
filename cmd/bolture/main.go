@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,8 @@ Options:
   --fps FPS               Framerate for playback and export (default: 30 or video fps)
   --fullscreen            Scale display to fill terminal window (default: 1:1 pixel mapping)
   --loop                  Loop playback when the video ends
+  --threads N             Sampling and draw workers: 1 disables multi-core,
+                          0 uses every CPU (default: 1)
   --dither METHOD         Dithering algorithm: atkinson, floyd-steinberg, burkes,
                           sierra, stucki, jarvis, bayer4, bayer8, bayer16
                           (default: atkinson)
@@ -52,6 +55,7 @@ func main() {
 		fpsFlag               float64
 		fullscreenFlag        bool
 		loopFlag              bool
+		threadsFlag           int
 		ditherFlag            string
 		fgFlag                string
 		bgFlag                string
@@ -67,6 +71,7 @@ func main() {
 	fs.Float64Var(&fpsFlag, "fps", 0, "Framerate for playback and export (default: 30 or video fps)")
 	fs.BoolVar(&fullscreenFlag, "fullscreen", false, "Scale display to fill terminal window (default: 1:1 pixel mapping)")
 	fs.BoolVar(&loopFlag, "loop", false, "Loop playback when the video ends")
+	fs.IntVar(&threadsFlag, "threads", 1, "Sampling and draw workers: 1 disables multi-core, 0 uses every CPU")
 	fs.StringVar(&ditherFlag, "dither", "atkinson", "Dithering algorithm: atkinson, floyd-steinberg, burkes, sierra, stucki, jarvis, bayer4, bayer8, bayer16")
 	fs.StringVar(&fgFlag, "foreground", "#f0d8c0", "Foreground dot color")
 	fs.StringVar(&bgFlag, "background", "transparent", "Background color (or transparent)")
@@ -85,6 +90,15 @@ func main() {
 	if inputPath == "" {
 		printUsage()
 		os.Exit(1)
+	}
+
+	if threadsFlag < 0 {
+		fmt.Fprintf(os.Stderr, "Invalid --threads %d: use 1 to disable multi-core or 0 for every CPU\n", threadsFlag)
+		os.Exit(1)
+	}
+	threads := threadsFlag
+	if threads == 0 {
+		threads = runtime.NumCPU()
 	}
 
 	ditherName, ok := render.ParseAlgorithm(ditherFlag)
@@ -138,7 +152,9 @@ func main() {
 		Dither:            ditherName,
 		Foreground:        fg,
 		Background:        bg,
+		Threads:           threads,
 	})
+	defer renderer.Close()
 
 	srcFrame := image.NewRGBA(image.Rect(0, 0, reader.Width, reader.Height))
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))

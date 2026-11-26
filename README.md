@@ -58,6 +58,14 @@ Use Floyd-Steinberg dithering:
 bolture video.mp4 --dither floyd-steinberg
 ```
 
+Split sampling and drawing across four workers:
+
+```bash
+bolture video.mp4 --threads 4
+```
+
+`--threads 0` uses every CPU. The renderer runs on one core unless `--threads` is set.
+
 Export a video:
 
 ```bash
@@ -75,6 +83,7 @@ bolture video.mp4 -o output.mp4 --fps 24
 | `--fps FPS`                  | Playback/export framerate                          | Source FPS    |
 | `--fullscreen`               | Scale the frame to fill the terminal window        | `false`       |
 | `--loop`                     | Loop playback when the video ends                  | `false`       |
+| `--threads N`                | Sampling and draw workers; 0 uses every CPU        | `1`           |
 | `--dither METHOD`            | See [Dithering algorithms](#dithering-algorithms) | `atkinson`    |
 | `--foreground COLOR`         | Dot color                                          | `#f0d8c0`     |
 | `--background COLOR`         | `transparent` or a color                           | `transparent` |
@@ -97,6 +106,12 @@ Error diffusion spreads each pixel's error to neighbours. Wider kernels smooth g
 | `bayer16` | Large ordered matrix, finer pattern. |
 
 All kernels work with `--dot-size` and `--temporal-stability`.
+
+## Multi-core
+
+The renderer is single-core by default. `--threads N` splits luminance sampling and frame drawing across N workers, and `--threads 0` uses every CPU. Asking for more workers than the machine has CPUs is capped.
+
+The dither scan stays on one core. Error diffusion depends on the previous pixel's error, so it cannot be split without changing the result. Sampling and drawing are row-independent, so they are the stages that split cleanly.
 
 ## Features
 
