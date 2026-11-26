@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"bolture/internal/kitty"
-	"bolture/internal/render"
-	"bolture/internal/video"
+	"github.com/bolbolius/bolture/internal/kitty"
+	"github.com/bolbolius/bolture/internal/render"
+	"github.com/bolbolius/bolture/internal/video"
 )
 
 func printUsage() {
