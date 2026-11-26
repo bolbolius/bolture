@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/binary"
 	"image"
 	"image/color"
 	"math"
@@ -35,6 +36,15 @@ type Renderer struct {
 	prevGridLum   []float64
 	prevGridDots  []bool
 	hasPrevGrid   bool
+
+	// Source-to-canvas sampling maps, rebuilt only when a dimension changes.
+	sampleReady            bool
+	sampleMode             int
+	sampleSrcW, sampleSrcH int
+	sampleDstW, sampleDstH int
+	sampleX0, sampleX1     []int
+	sampleY0, sampleY1     []int
+	sampleCol, sampleRow   []int
 }
 
 func NewRenderer(opts Options) *Renderer {
@@ -50,7 +60,9 @@ func NewRenderer(opts Options) *Renderer {
 	if opts.Density <= 0 {
 		opts.Density = 1.0
 	}
-	if opts.Dither == "" {
+	if name, ok := ParseAlgorithm(opts.Dither); ok {
+		opts.Dither = name
+	} else {
 		opts.Dither = "atkinson"
 	}
 	if opts.TemporalStability < 0 {
@@ -82,6 +94,13 @@ func NewRenderer(opts Options) *Renderer {
 		gridDotsBuf:   make([]bool, gridTotal),
 		prevGridLum:   make([]float64, gridTotal),
 		prevGridDots:  make([]bool, gridTotal),
+
+		sampleX0:  make([]int, opts.Width),
+		sampleX1:  make([]int, opts.Width),
+		sampleCol: make([]int, opts.Width),
+		sampleY0:  make([]int, opts.Height),
+		sampleY1:  make([]int, opts.Height),
+		sampleRow: make([]int, opts.Height),
 	}
 }
 
@@ -118,13 +137,90 @@ func (r *Renderer) Render(src, dst *image.RGBA) error {
 	return nil
 }
 
+const (
+	sampleIdentity = iota
+	sampleBox
+	sampleNearest
+)
+
+// prepareSampling builds the source-to-canvas index maps for the current
+// dimensions. The slices are owned by the renderer and reused, so this stays
+// off the allocation path after the first frame at a given size.
+func (r *Renderer) prepareSampling(srcW, srcH, dstW, dstH int) {
+	if r.sampleReady && r.sampleSrcW == srcW && r.sampleSrcH == srcH &&
+		r.sampleDstW == dstW && r.sampleDstH == dstH {
+		return
+	}
+
+	if cap(r.sampleX0) < dstW {
+		r.sampleX0 = make([]int, dstW)
+		r.sampleX1 = make([]int, dstW)
+		r.sampleCol = make([]int, dstW)
+	} else {
+		r.sampleX0 = r.sampleX0[:dstW]
+		r.sampleX1 = r.sampleX1[:dstW]
+		r.sampleCol = r.sampleCol[:dstW]
+	}
+	if cap(r.sampleY0) < dstH {
+		r.sampleY0 = make([]int, dstH)
+		r.sampleY1 = make([]int, dstH)
+		r.sampleRow = make([]int, dstH)
+	} else {
+		r.sampleY0 = r.sampleY0[:dstH]
+		r.sampleY1 = r.sampleY1[:dstH]
+		r.sampleRow = r.sampleRow[:dstH]
+	}
+
+	switch {
+	case srcW == dstW && srcH == dstH:
+		r.sampleMode = sampleIdentity
+	case dstW < srcW && dstH < srcH:
+		r.sampleMode = sampleBox
+		for cx := 0; cx < dstW; cx++ {
+			sx0 := cx * srcW / dstW
+			sx1 := (cx + 1) * srcW / dstW
+			if sx1 <= sx0 {
+				sx1 = sx0 + 1
+			}
+			r.sampleX0[cx] = sx0
+			r.sampleX1[cx] = sx1
+		}
+		for cy := 0; cy < dstH; cy++ {
+			sy0 := cy * srcH / dstH
+			sy1 := (cy + 1) * srcH / dstH
+			if sy1 <= sy0 {
+				sy1 = sy0 + 1
+			}
+			r.sampleY0[cy] = sy0
+			r.sampleY1[cy] = sy1
+		}
+	default:
+		r.sampleMode = sampleNearest
+		for cx := 0; cx < dstW; cx++ {
+			r.sampleCol[cx] = cx * srcW / dstW
+		}
+		for cy := 0; cy < dstH; cy++ {
+			r.sampleRow[cy] = cy * srcH / dstH
+		}
+	}
+
+	r.sampleSrcW = srcW
+	r.sampleSrcH = srcH
+	r.sampleDstW = dstW
+	r.sampleDstH = dstH
+	r.sampleReady = true
+}
+
 func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH int) {
+	r.prepareSampling(srcW, srcH, canvasW, canvasH)
+
 	srcPix := src.Pix
 	srcStride := src.Stride
 	lum := r.lumBuf
 	total := canvasW * canvasH
 
-	if srcW == canvasW && srcH == canvasH {
+	switch r.sampleMode {
+	case sampleIdentity:
 		for cy := 0; cy < canvasH; cy++ {
 			rowOff := cy * srcStride
 			dstOff := cy * canvasW
@@ -133,22 +229,16 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 				lum[dstOff+cx] = calculateLuminance(srcPix[p], srcPix[p+1], srcPix[p+2])
 			}
 		}
-	} else if canvasW < srcW && canvasH < srcH {
+	case sampleBox:
 		// Area box-averaging to prevent aliasing when downsampling
 		for cy := 0; cy < canvasH; cy++ {
-			sy0 := (cy * srcH) / canvasH
-			sy1 := ((cy + 1) * srcH) / canvasH
-			if sy1 <= sy0 {
-				sy1 = sy0 + 1
-			}
+			sy0 := r.sampleY0[cy]
+			sy1 := r.sampleY1[cy]
 			dstRowOff := cy * canvasW
 
 			for cx := 0; cx < canvasW; cx++ {
-				sx0 := (cx * srcW) / canvasW
-				sx1 := ((cx + 1) * srcW) / canvasW
-				if sx1 <= sx0 {
-					sx1 = sx0 + 1
-				}
+				sx0 := r.sampleX0[cx]
+				sx1 := r.sampleX1[cx]
 
 				var totalR, totalG, totalB, count int
 				for sy := sy0; sy < sy1; sy++ {
@@ -168,13 +258,13 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 				lum[dstRowOff+cx] = calculateLuminance(avgR, avgG, avgB)
 			}
 		}
-	} else {
+	default:
 		for cy := 0; cy < canvasH; cy++ {
-			sy := (cy * srcH) / canvasH
+			sy := r.sampleRow[cy]
 			srcRowOff := sy * srcStride
 			dstRowOff := cy * canvasW
 			for cx := 0; cx < canvasW; cx++ {
-				sx := (cx * srcW) / canvasW
+				sx := r.sampleCol[cx]
 				p := srcRowOff + sx*4
 				lum[dstRowOff+cx] = calculateLuminance(srcPix[p], srcPix[p+1], srcPix[p+2])
 			}
@@ -194,13 +284,20 @@ func (r *Renderer) sampleLuminance(src *image.RGBA, srcW, srcH, canvasW, canvasH
 }
 
 // ITU-R BT.709 perceptual luminance
-func calculateLuminance(r, g, b uint8) float64 {
-	y := (2126*float64(r) + 7152*float64(g) + 722*float64(b)) / (10000.0 * 255.0)
+const (
+	luminanceDenom     = 10000.0 * 255.0
+	luminanceScale     = 1.0 / luminanceDenom
+	shadowCutoffWeight = int(ShadowCutoff * luminanceDenom)
+)
 
-	if y <= ShadowCutoff {
+// ITU-R BT.709 perceptual luminance. The weighted sum is an exact integer, so
+// the hot loop pays one conversion and one multiply instead of a divide.
+func calculateLuminance(r, g, b uint8) float64 {
+	y := 2126*int(r) + 7152*int(g) + 722*int(b)
+	if y <= shadowCutoffWeight {
 		return 0.0
 	}
-	return y
+	return float64(y) * luminanceScale
 }
 
 func (r *Renderer) renderSinglePixel(dst *image.RGBA, w, h int) {
@@ -215,20 +312,15 @@ func (r *Renderer) renderSinglePixel(dst *image.RGBA, w, h int) {
 	pix := dst.Pix
 	fg := r.opts.Foreground
 	bg := r.opts.Background
+	fgPix := uint32(fg.R) | uint32(fg.G)<<8 | uint32(fg.B)<<16 | uint32(fg.A)<<24
+	bgPix := uint32(bg.R) | uint32(bg.G)<<8 | uint32(bg.B)<<16 | uint32(bg.A)<<24
 
 	for i := 0; i < total; i++ {
-		p := i * 4
+		v := bgPix
 		if r.dotsBuf[i] {
-			pix[p] = fg.R
-			pix[p+1] = fg.G
-			pix[p+2] = fg.B
-			pix[p+3] = fg.A
-		} else {
-			pix[p] = bg.R
-			pix[p+1] = bg.G
-			pix[p+2] = bg.B
-			pix[p+3] = bg.A
+			v = fgPix
 		}
+		binary.LittleEndian.PutUint32(pix[i*4:], v)
 	}
 
 	copy(r.prevLum[:total], r.lumBuf[:total])
@@ -301,13 +393,11 @@ func (r *Renderer) renderDiscs(dst *image.RGBA, w, h int) {
 	total := w * h
 	bg := r.opts.Background
 	fg := r.opts.Foreground
+	fgPix := uint32(fg.R) | uint32(fg.G)<<8 | uint32(fg.B)<<16 | uint32(fg.A)<<24
+	bgPix := uint32(bg.R) | uint32(bg.G)<<8 | uint32(bg.B)<<16 | uint32(bg.A)<<24
 
 	for i := 0; i < total; i++ {
-		p := i * 4
-		pix[p] = bg.R
-		pix[p+1] = bg.G
-		pix[p+2] = bg.B
-		pix[p+3] = bg.A
+		binary.LittleEndian.PutUint32(pix[i*4:], bgPix)
 	}
 
 	halfStep := float64(step) * 0.5
@@ -342,10 +432,7 @@ func (r *Renderer) renderDiscs(dst *image.RGBA, w, h int) {
 					dx := float64(px) + 0.5 - cx
 					if step <= 3 || (dx*dx+dySq) <= rSq*1.05 {
 						offset := rowOff + px*4
-						pix[offset] = fg.R
-						pix[offset+1] = fg.G
-						pix[offset+2] = fg.B
-						pix[offset+3] = fg.A
+						binary.LittleEndian.PutUint32(pix[offset:], fgPix)
 					}
 				}
 			}
