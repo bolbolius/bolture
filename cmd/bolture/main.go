@@ -34,7 +34,9 @@ Options:
   --fps FPS               Framerate for playback and export (default: 30 or video fps)
   --fullscreen            Scale display to fill terminal window (default: 1:1 pixel mapping)
   --loop                  Loop playback when the video ends
-  --dither METHOD         Dithering algorithm: atkinson or bayer (default: atkinson)
+  --dither METHOD         Dithering algorithm: atkinson, floyd-steinberg, burkes,
+                          sierra, stucki, jarvis, bayer4, bayer8, bayer16
+                          (default: atkinson)
   --foreground COLOR      Foreground dot color (hex or named, default: #f0d8c0)
   --background COLOR      Background color (hex, named, or transparent, default: transparent)
   -o, --output FILE       Output file: image (.png, .jpg) or video (.mp4, .mkv, .mov, .webm)
@@ -65,7 +67,7 @@ func main() {
 	fs.Float64Var(&fpsFlag, "fps", 0, "Framerate for playback and export (default: 30 or video fps)")
 	fs.BoolVar(&fullscreenFlag, "fullscreen", false, "Scale display to fill terminal window (default: 1:1 pixel mapping)")
 	fs.BoolVar(&loopFlag, "loop", false, "Loop playback when the video ends")
-	fs.StringVar(&ditherFlag, "dither", "atkinson", "Dithering algorithm: atkinson or bayer")
+	fs.StringVar(&ditherFlag, "dither", "atkinson", "Dithering algorithm: atkinson, floyd-steinberg, burkes, sierra, stucki, jarvis, bayer4, bayer8, bayer16")
 	fs.StringVar(&fgFlag, "foreground", "#f0d8c0", "Foreground dot color")
 	fs.StringVar(&bgFlag, "background", "transparent", "Background color (or transparent)")
 	fs.StringVar(&outFlag, "output", "", "Output file (image or video)")
@@ -82,6 +84,12 @@ func main() {
 
 	if inputPath == "" {
 		printUsage()
+		os.Exit(1)
+	}
+
+	ditherName, ok := render.ParseAlgorithm(ditherFlag)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Unknown dithering algorithm %q. Choose one of: %s\n", ditherFlag, strings.Join(render.Algorithms(), ", "))
 		os.Exit(1)
 	}
 
@@ -127,7 +135,7 @@ func main() {
 		DotSize:           dotSizeFlag,
 		Density:           densityFlag,
 		TemporalStability: temporalStability,
-		Dither:            strings.ToLower(ditherFlag),
+		Dither:            ditherName,
 		Foreground:        fg,
 		Background:        bg,
 	})

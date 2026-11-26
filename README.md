@@ -52,10 +52,10 @@ Use a larger canvas and dots:
 bolture video.mp4 --canvas 1920x1080 --dot-size 3
 ```
 
-Use Bayer dithering:
+Use Floyd-Steinberg dithering:
 
 ```bash
-bolture video.mp4 --dither bayer
+bolture video.mp4 --dither floyd-steinberg
 ```
 
 Export a video:
@@ -73,17 +73,36 @@ bolture video.mp4 -o output.mp4 --fps 24
 | `--density MULT`             | Controls how much luminance is represented by dots | `1.0`         |
 | `--temporal-stability VALUE` | `off`, `low`, `medium`, `high`, or `0.0` to `1.0`  | `medium`      |
 | `--fps FPS`                  | Playback/export framerate                          | Source FPS    |
-| `--fullscreen`               | Scale the frame to fill the terminal window         | `false`       |
+| `--fullscreen`               | Scale the frame to fill the terminal window        | `false`       |
 | `--loop`                     | Loop playback when the video ends                  | `false`       |
-| `--dither METHOD`            | `atkinson` or `bayer`                              | `atkinson`    |
+| `--dither METHOD`            | See [Dithering algorithms](#dithering-algorithms) | `atkinson`    |
 | `--foreground COLOR`         | Dot color                                          | `#f0d8c0`     |
 | `--background COLOR`         | `transparent` or a color                           | `transparent` |
 | `-o, --output FILE`          | Export to an image or video                        | none          |
 
+## Dithering algorithms
+
+Error diffusion spreads each pixel's error to neighbours. Wider kernels smooth gradients more, blur fine detail, and cost more per frame. Ordered dithering uses a fixed threshold matrix, which is faster and produces a stable pattern.
+
+| Name | Notes |
+| --- | --- |
+| `atkinson` | Default. Lighter, sparser dots; throws away a quarter of the error. |
+| `floyd-steinberg` | Classic kernel. Good detail, with some worm-like artifacts on flat areas. |
+| `burkes` | Wider Floyd-Steinberg variant, smoother gradients. |
+| `sierra` | Three-row kernel, smoother than Floyd-Steinberg with less blur than Stucki. |
+| `stucki` | Wide kernel, sharp gradients. |
+| `jarvis` | Five-column kernel, the smoothest of the diffusion kernels. |
+| `bayer4` | Small ordered matrix, coarse pattern. |
+| `bayer8` | Ordered matrix; `bayer` is an alias. |
+| `bayer16` | Large ordered matrix, finer pattern. |
+
+All kernels work with `--dot-size` and `--temporal-stability`.
+
 ## Features
 
 * Real-time video playback in the terminal
-* Atkinson and Bayer 8×8 dithering
+* Atkinson, Floyd-Steinberg, Burkes, Sierra, Stucki, and Jarvis error diffusion
+* Bayer 4×4, 8×8, and 16×16 ordered dithering
 * Adjustable dot size and density
 * Temporal stability to reduce flickering
 * Perceptual luminance to separate background and foreground
@@ -98,7 +117,7 @@ bolture video.mp4 -o output.mp4 --fps 24
 
 Frames are decoded by FFmpeg as raw RGBA, resized to the requested canvas, and converted to perceptual luminance using BT.709 weighting. Very dark pixels are removed with a small cutoff to keep shadows clean.
 
-The luminance is then converted into dots using either **Atkinson error diffusion** or **Bayer 8×8 ordered dithering**. `--density` controls how much of the luminance range is represented by dots.
+The luminance is then converted into dots with an error-diffusion kernel or a Bayer matrix. `--density` controls how much of the luminance range is represented by dots.
 
 Temporal hysteresis keeps small frame-to-frame changes from constantly flipping individual dots. This reduces flickering without using frame blending or motion blur.
 
