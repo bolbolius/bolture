@@ -10,6 +10,10 @@ import (
 )
 
 func TestReader(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+
 	tmpDir := t.TempDir()
 	samplePath := filepath.Join(tmpDir, "test.mp4")
 

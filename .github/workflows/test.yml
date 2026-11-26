@@ -14,5 +14,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: go vet ./...
       - run: go test ./...
