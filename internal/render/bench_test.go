@@ -79,3 +79,108 @@ func BenchmarkRender720pParallel(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkFrame measures the full frame path: sampling, dithering, and the
+// pixel write, from one 1080p source at each canvas size.
+func BenchmarkFrame(b *testing.B) {
+	src := benchmarkSource()
+	canvases := []struct {
+		name string
+		w, h int
+	}{
+		{"360p", 640, 360},
+		{"720p", 1280, 720},
+		{"1080p", 1920, 1080},
+	}
+	for _, c := range canvases {
+		for _, threads := range []int{1, 4} {
+			b.Run(fmt.Sprintf("%s/%d", c.name, threads), func(b *testing.B) {
+				dst := image.NewRGBA(image.Rect(0, 0, c.w, c.h))
+				r := NewRenderer(Options{
+					Width:             c.w,
+					Height:            c.h,
+					DotSize:           1,
+					Density:           1,
+					Dither:            "atkinson",
+					TemporalStability: 0.6,
+					Foreground:        color.RGBA{240, 216, 192, 255},
+					Background:        color.RGBA{0, 0, 0, 0},
+					Threads:           threads,
+				})
+				if err := r.Render(src, dst); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if err := r.Render(src, dst); err != nil {
+						b.Fatal(err)
+					}
+				}
+				r.Close()
+			})
+		}
+	}
+}
+
+// BenchmarkDraw measures the dither and pixel write for a prepared luminance
+// buffer, with sampling excluded.
+func BenchmarkDraw(b *testing.B) {
+	canvases := []struct {
+		name string
+		w, h int
+	}{
+		{"360p", 640, 360},
+		{"720p", 1280, 720},
+		{"1080p", 1920, 1080},
+	}
+	for _, c := range canvases {
+		b.Run(c.name, func(b *testing.B) {
+			lum := make([]float64, c.w*c.h)
+			for i := range lum {
+				lum[i] = float64((i*37)%1000) / 1000
+			}
+			dst := image.NewRGBA(image.Rect(0, 0, c.w, c.h))
+			r := NewRenderer(Options{
+				Width: c.w, Height: c.h, DotSize: 1, Density: 1,
+				Dither: "atkinson", TemporalStability: 0.6,
+				Foreground: color.RGBA{240, 216, 192, 255},
+				Background: color.RGBA{0, 0, 0, 0},
+			})
+			copy(r.lumBuf, lum)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				r.renderSinglePixel(dst, c.w, c.h)
+			}
+		})
+	}
+}
+
+// BenchmarkDitherOnly measures the diffusion scan alone, with luminance and
+// the dot buffer prepared.
+func BenchmarkDitherOnly(b *testing.B) {
+	canvases := []struct {
+		name string
+		w, h int
+	}{
+		{"360p", 640, 360},
+		{"720p", 1280, 720},
+		{"1080p", 1920, 1080},
+	}
+	for _, c := range canvases {
+		b.Run(c.name, func(b *testing.B) {
+			lum := make([]float64, c.w*c.h)
+			for i := range lum {
+				lum[i] = float64((i*37)%1000) / 1000
+			}
+			dots := make([]bool, c.w*c.h)
+			work := make([]float64, c.w*c.h)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				Dither(lum, dots, work, c.w, c.h, "atkinson", 1, nil, 0)
+			}
+		})
+	}
+}
